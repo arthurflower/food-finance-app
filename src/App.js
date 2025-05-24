@@ -16,8 +16,8 @@ const FoodFinanceDashboard = () => {
   const [apiError, setApiError] = useState('');
 
   // Nutritionix API credentials
-  const APP_ID = 'YOUR_APP_ID'; // Replace with your app ID
-  const APP_KEY = 'YOUR_APP_KEY'; // Replace with your app key
+  const APP_ID = 'eb43652c';
+  const APP_KEY = '69c8e27a6217fe8292a31d4226f79aaa';
 
   // Load saved expenses from localStorage on mount
   useEffect(() => {
@@ -43,7 +43,6 @@ const FoodFinanceDashboard = () => {
     setApiError('');
 
     try {
-      // Search for both branded and common foods
       const response = await fetch(`https://trackapi.nutritionix.com/v2/search/instant?query=${encodeURIComponent(query)}`, {
         headers: {
           'x-app-id': APP_ID,
@@ -57,13 +56,12 @@ const FoodFinanceDashboard = () => {
 
       const data = await response.json();
       
-      // Combine branded and common results
       const combinedResults = [
         ...data.branded.map(item => ({ ...item, type: 'branded' })),
         ...data.common.map(item => ({ ...item, type: 'common' }))
       ];
 
-      setSearchResults(combinedResults.slice(0, 10)); // Limit to 10 results
+      setSearchResults(combinedResults.slice(0, 10));
     } catch (error) {
       console.error('Search error:', error);
       setApiError('Failed to search. Please check your API credentials.');
@@ -106,7 +104,6 @@ const FoodFinanceDashboard = () => {
       const data = await response.json();
       const foodData = item.type === 'branded' ? data.foods[0] : data.foods[0];
       
-      // Process serving sizes
       const servingSizes = foodData.alt_measures || [];
       const defaultServing = {
         serving_unit: foodData.serving_unit,
@@ -369,19 +366,6 @@ const FoodFinanceDashboard = () => {
               Track your grocery expenses & nutrition with real data
             </p>
           </div>
-
-          {/* API Setup Notice */}
-          {(APP_ID === 'YOUR_APP_ID' || APP_KEY === 'YOUR_APP_KEY') && (
-            <div className="mb-6 p-4 bg-yellow-900/50 border border-yellow-600 rounded-lg">
-              <div className="flex items-center gap-2 text-yellow-300">
-                <AlertCircle className="h-5 w-5" />
-                <p className="text-sm">
-                  To use real nutrition data, replace APP_ID and APP_KEY in the code with your Nutritionix API credentials.
-                  Get them free at <a href="https://www.nutritionix.com/api" target="_blank" rel="noopener noreferrer" className="underline">nutritionix.com/api</a>
-                </p>
-              </div>
-            </div>
-          )}
 
           {/* Stats Cards */}
           <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8">
@@ -686,27 +670,26 @@ const FoodFinanceDashboard = () => {
                           dataKey="value"
                         >
                           {analytics.nutritionData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={entry.color} />
-                            ))}
-                          </Pie>
-                          <Tooltip 
-                            formatter={(value) => [`${value}g`, 'Amount']}
-                            contentStyle={{
-                              backgroundColor: '#1F2937',
-                              border: '1px solid #374151',
-                              borderRadius: '6px',
-                              color: '#ffffff'
-                            }}
-                            labelStyle={{ color: '#9CA3AF' }}
-                          />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="flex items-center justify-center h-48 text-gray-500">
-                        Add items to see nutrition data
-                      </div>
-                    )}
-                  </div>
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <Tooltip 
+                          formatter={(value) => [`${value}g`, 'Amount']}
+                          contentStyle={{
+                            backgroundColor: '#1F2937',
+                            border: '1px solid #374151',
+                            borderRadius: '6px',
+                            color: '#ffffff'
+                          }}
+                          labelStyle={{ color: '#9CA3AF' }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="flex items-center justify-center h-48 text-gray-500">
+                      Add items to see nutrition data
+                    </div>
+                  )}
                 </div>
               </div>
 
