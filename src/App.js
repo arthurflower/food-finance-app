@@ -77,56 +77,73 @@ const FoodFinanceDashboard = () => {
     setApiError('');
 
     try {
-      let endpoint, body;
-      
-      if (item.type === 'branded') {
-        endpoint = 'https://trackapi.nutritionix.com/v2/search/item';
-        body = { nix_item_id: item.nix_item_id };
-      } else {
-        endpoint = 'https://trackapi.nutritionix.com/v2/natural/nutrients';
-        body = { query: item.food_name };
-      }
-
-      const response = await fetch(endpoint, {
-        method: 'POST',
+      let endpoint;
+      const fetchOptions = {
         headers: {
           'x-app-id': APP_ID,
           'x-app-key': APP_KEY,
-          'Content-Type': 'application/json'
         },
-        body: JSON.stringify(body)
-      });
+      };
+
+      if (item.type === 'branded') {
+        endpoint = `https://trackapi.nutritionix.com/v2/search/item?nix_item_id=${encodeURIComponent(item.nix_item_id)}`;
+        fetchOptions.method = 'GET';
+      } else {
+        endpoint = 'https://trackapi.nutritionix.com/v2/natural/nutrients';
+        fetchOptions.method = 'POST';
+        fetchOptions.headers['Content-Type'] = 'application/json';
+        fetchOptions.body = JSON.stringify({ query: item.food_name });
+      }
+
+      const response = await fetch(endpoint, fetchOptions);
 
       if (!response.ok) {
-        throw new Error('Failed to get nutrition details');
+        console.error('API Request Failed:', response.status, response.statusText);
+        const responseText = await response.text();
+        console.error('API Response Text:', responseText);
+        throw new Error(`Failed to get nutrition details. Status: ${response.status}`);
       }
 
       const data = await response.json();
-      const foodData = item.type === 'branded' ? data.foods[0] : data.foods[0];
+      if (!data.foods || data.foods.length === 0) {
+        console.error('No food data returned from API:', data);
+        throw new Error('No food data found for the selected item.');
+      }
+      const foodData = data.foods[0];
       
+      const baseServingWeightGrams = foodData.serving_weight_grams && foodData.serving_weight_grams > 0 
+                                      ? foodData.serving_weight_grams 
+                                      : null;
+
       const servingSizes = foodData.alt_measures || [];
       const defaultServing = {
-        serving_unit: foodData.serving_unit,
-        serving_qty: foodData.serving_qty,
-        serving_weight_grams: foodData.serving_weight_grams
+        serving_unit: foodData.serving_unit || 'serving',
+        serving_qty: typeof foodData.serving_qty !== 'undefined' ? foodData.serving_qty : 1,
+        serving_weight_grams: foodData.serving_weight_grams || 0 
       };
       
-      const allServings = [defaultServing, ...servingSizes];
+      const allServings = [defaultServing, ...servingSizes].filter(s => s.serving_unit && typeof s.serving_qty !== 'undefined');
       
       setSelectedProduct({
         ...foodData,
-        common_units: allServings.map(serving => ({
-          unit: serving.serving_unit,
-          qty: serving.serving_qty,
-          grams: serving.serving_weight_grams,
-          multiplier: serving.serving_weight_grams / foodData.serving_weight_grams
-        }))
+        common_units: allServings.map(serving => {
+          const servingWeight = serving.serving_weight_grams || 0;
+          const multiplier = (baseServingWeightGrams && servingWeight > 0 && baseServingWeightGrams > 0) ? (servingWeight / baseServingWeightGrams) : 1;
+          return {
+            unit: serving.serving_unit,
+            qty: serving.serving_qty,
+            grams: servingWeight,
+            multiplier: multiplier
+          };
+        })
       });
       
-      setSelectedUnit(defaultServing.serving_unit);
+      const firstAvailableUnit = allServings.length > 0 ? allServings[0].serving_unit : (foodData.serving_unit || 'g');
+      setSelectedUnit(firstAvailableUnit);
+
     } catch (error) {
       console.error('Nutrition fetch error:', error);
-      setApiError('Failed to get nutrition details. Please try again.');
+      setApiError(error.message || 'Failed to get nutrition details. Please try again.');
     } finally {
       setIsSearching(false);
     }
@@ -147,10 +164,14 @@ const FoodFinanceDashboard = () => {
     return () => clearTimeout(timer);
   }, [searchTerm, selectedProduct]);
 
-  // Update selected unit when product changes
   useEffect(() => {
-    if (selectedProduct && selectedProduct.common_units) {
-      setSelectedUnit(selectedProduct.common_units[0].unit);
+    if (selectedProduct && selectedProduct.common_units && selectedProduct.common_units.length > 0) {
+      const currentUnitIsValid = selectedProduct.common_units.some(u => u.unit === selectedUnit);
+      if (!currentUnitIsValid || !selectedUnit) {
+        setSelectedUnit(selectedProduct.common_units[0].unit);
+      }
+    } else if (!selectedProduct) {
+        setSelectedUnit('');
     }
   }, [selectedProduct]);
 
@@ -166,14 +187,16 @@ const FoodFinanceDashboard = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Calculate nutrition based on selected unit
   const calculateNutrition = (product, amount, unit) => {
     if (!product || !amount || !unit) return null;
     
     const unitInfo = product.common_units?.find(u => u.unit === unit);
     if (!unitInfo) return null;
     
-    const multiplier = unitInfo.multiplier * amount;
+    const numericAmount = parseFloat(amount);
+    if (isNaN(numericAmount) || numericAmount <= 0) return null;
+
+    const multiplier = unitInfo.multiplier * numericAmount;
     return {
       calories: Math.round((product.nf_calories || 0) * multiplier),
       protein: Math.round((product.nf_protein || 0) * multiplier),
@@ -182,15 +205,14 @@ const FoodFinanceDashboard = () => {
     };
   };
 
-  // Calculate analytics
   const analytics = useMemo(() => {
     const total = expenses.reduce((sum, exp) => sum + exp.cost, 0);
     const avgPerItem = expenses.length ? total / expenses.length : 0;
     
-    const totalCalories = expenses.reduce((sum, exp) => sum + exp.totalCalories, 0);
-    const totalProtein = expenses.reduce((sum, exp) => sum + exp.totalProtein, 0);
-    const totalFat = expenses.reduce((sum, exp) => sum + exp.totalFat, 0);
-    const totalCarbs = expenses.reduce((sum, exp) => sum + exp.totalCarbs, 0);
+    const totalCalories = expenses.reduce((sum, exp) => sum + (exp.totalCalories || 0), 0);
+    const totalProtein = expenses.reduce((sum, exp) => sum + (exp.totalProtein || 0), 0);
+    const totalFat = expenses.reduce((sum, exp) => sum + (exp.totalFat || 0), 0);
+    const totalCarbs = expenses.reduce((sum, exp) => sum + (exp.totalCarbs || 0), 0);
     
     const categoryTotals = expenses.reduce((acc, exp) => {
       const category = exp.category || 'Groceries';
@@ -209,10 +231,10 @@ const FoodFinanceDashboard = () => {
       if (!acc[date]) {
         acc[date] = { calories: 0, protein: 0, fat: 0, carbs: 0 };
       }
-      acc[date].calories += exp.totalCalories;
-      acc[date].protein += exp.totalProtein;
-      acc[date].fat += exp.totalFat;
-      acc[date].carbs += exp.totalCarbs;
+      acc[date].calories += exp.totalCalories || 0;
+      acc[date].protein += exp.totalProtein || 0;
+      acc[date].fat += exp.totalFat || 0;
+      acc[date].carbs += exp.totalCarbs || 0;
       return acc;
     }, {});
 
@@ -251,10 +273,13 @@ const FoodFinanceDashboard = () => {
   }, [expenses]);
 
   const addExpense = () => {
-    if (!selectedProduct || !weight || !cost) return;
+    if (!selectedProduct || !weight || !cost || parseFloat(weight) <= 0 || parseFloat(cost) < 0) return;
     
     const nutrition = calculateNutrition(selectedProduct, parseFloat(weight), selectedUnit);
-    if (!nutrition) return;
+    if (!nutrition) {
+      setApiError("Could not calculate nutrition. Check quantity and unit.");
+      return;
+    }
     
     const newExpense = {
       id: Date.now(),
@@ -264,7 +289,7 @@ const FoodFinanceDashboard = () => {
       serving_unit: selectedUnit,
       weight: parseFloat(weight),
       cost: parseFloat(cost),
-      pricePerUnit: parseFloat(cost) / parseFloat(weight),
+      pricePerUnit: (parseFloat(weight) > 0 ? parseFloat(cost) / parseFloat(weight) : 0),
       totalCalories: nutrition.calories,
       totalProtein: nutrition.protein,
       totalFat: nutrition.fat,
@@ -278,10 +303,13 @@ const FoodFinanceDashboard = () => {
   };
 
   const updateExpense = () => {
-    if (!selectedProduct || !weight || !cost || !editingId) return;
+    if (!selectedProduct || !weight || !cost || !editingId || parseFloat(weight) <= 0 || parseFloat(cost) < 0) return;
     
     const nutrition = calculateNutrition(selectedProduct, parseFloat(weight), selectedUnit);
-    if (!nutrition) return;
+    if (!nutrition) {
+      setApiError("Could not calculate nutrition for update. Check quantity and unit.");
+      return;
+    }
     
     setExpenses(prev => prev.map(exp => 
       exp.id === editingId 
@@ -292,7 +320,7 @@ const FoodFinanceDashboard = () => {
             serving_unit: selectedUnit,
             weight: parseFloat(weight),
             cost: parseFloat(cost),
-            pricePerUnit: parseFloat(cost) / parseFloat(weight),
+            pricePerUnit: (parseFloat(weight) > 0 ? parseFloat(cost) / parseFloat(weight) : 0),
             totalCalories: nutrition.calories,
             totalProtein: nutrition.protein,
             totalFat: nutrition.fat,
@@ -314,18 +342,18 @@ const FoodFinanceDashboard = () => {
     setSelectedProduct({
       food_name: expense.food_name,
       brand_name: expense.brand_name,
-      serving_unit: expense.serving_unit,
-      common_units: [{ unit: expense.serving_unit, multiplier: 1, grams: 100 }],
-      nf_calories: expense.totalCalories / expense.weight,
-      nf_protein: expense.totalProtein / expense.weight,
-      nf_total_fat: expense.totalFat / expense.weight,
-      nf_total_carbohydrate: expense.totalCarbs / expense.weight,
+      common_units: [{ unit: expense.serving_unit, qty: 1, grams: 100, multiplier: 1 }],
+      nf_calories: expense.totalCalories ? (expense.totalCalories / (expense.weight || 1)) : 0,
+      nf_protein: expense.totalProtein ? (expense.totalProtein / (expense.weight || 1)) : 0,
+      nf_total_fat: expense.totalFat ? (expense.totalFat / (expense.weight || 1)) : 0,
+      nf_total_carbohydrate: expense.totalCarbs ? (expense.totalCarbs / (expense.weight || 1)) : 0,
       photo: { thumb: expense.photo }
     });
     setWeight(expense.weight.toString());
     setCost(expense.cost.toString());
     setSelectedUnit(expense.serving_unit);
-    setSearchTerm(`${expense.brand_name} ${expense.food_name}`);
+    setSearchTerm(`${expense.brand_name || ''} ${expense.food_name}`);
+    setShowSuggestions(false);
   };
 
   const resetForm = () => {
@@ -342,12 +370,36 @@ const FoodFinanceDashboard = () => {
 
   const handleProductSelect = async (product) => {
     setShowSuggestions(false);
-    setSearchResults([]);
-    await getDetailedNutrition(product);
-    setSearchTerm(`${product.brand_name || ''} ${product.food_name}`);
+    setSearchResults([]); 
+    await getDetailedNutrition(product); 
+    setSearchTerm(`${product.brand_name || product.tag_name || ''} ${product.food_name}`);
   };
 
   const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f97316', '#eab308', '#22c55e', '#06b6d4'];
+
+  const renderCustomPieLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent, index, name, fill }) => {
+    if (percent === 0) { // Don't render label for 0% slices
+      return null;
+    }
+
+    const RADIAN = Math.PI / 180;
+    const radius = innerRadius + (outerRadius - innerRadius) * 0.5; // Position label in the middle of the slice
+    const x = cx + radius * Math.cos(-midAngle * RADIAN);
+    const y = cy + radius * Math.sin(-midAngle * RADIAN);
+
+    return (
+      <text
+        x={x}
+        y={y}
+        fill="white" // Set text color to white
+        fontSize={10} // Adjusted font size
+        textAnchor="middle"
+        dominantBaseline="central"
+      >
+        {`${name} ${(percent * 100).toFixed(0)}%`}
+      </text>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-gray-900">
@@ -431,14 +483,12 @@ const FoodFinanceDashboard = () => {
                   {editingId ? 'Edit Item' : 'Add Food Item'}
                 </h2>
                 
-                {/* API Error */}
                 {apiError && (
                   <div className="mb-4 p-3 bg-red-900/50 border border-red-600 rounded text-red-300 text-sm">
                     {apiError}
                   </div>
                 )}
                 
-                {/* Search Input */}
                 <div className="relative mb-4 search-container">
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
@@ -452,7 +502,9 @@ const FoodFinanceDashboard = () => {
                         }
                       }}
                       onFocus={() => {
-                        if (!selectedProduct) setShowSuggestions(true);
+                        if (searchResults.length > 0 || (searchTerm && !selectedProduct)) {
+                           setShowSuggestions(true);
+                        }
                       }}
                       placeholder="Search foods..."
                       className="w-full pl-9 pr-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -464,25 +516,24 @@ const FoodFinanceDashboard = () => {
                     )}
                   </div>
                   
-                  {/* Search Results */}
                   {showSuggestions && searchResults.length > 0 && (
                     <div className="absolute z-20 w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-xl max-h-64 overflow-y-auto">
                       {searchResults.map((product, index) => (
                         <div
-                          key={`${product.nix_item_id || product.tag_id}-${index}`}
+                          key={`${product.nix_item_id || product.tag_id || product.food_name}-${index}`}
                           onClick={() => handleProductSelect(product)}
                           className="px-3 py-2 cursor-pointer hover:bg-gray-700 border-b border-gray-700 last:border-b-0"
                         >
                           <div className="flex items-center gap-3">
                             {product.photo?.thumb && (
-                              <img src={product.photo.thumb} alt="" className="w-10 h-10 rounded object-cover" />
+                              <img src={product.photo.thumb} alt={product.food_name} className="w-10 h-10 rounded object-cover" />
                             )}
                             <div className="flex-1">
                               <div className="font-medium text-white text-sm">
-                                {product.brand_name || 'Generic'}
+                                {product.brand_name || product.tag_name || 'Generic'}
                               </div>
                               <div className="text-gray-400 text-xs">{product.food_name}</div>
-                              {product.nf_calories && (
+                              {product.nf_calories && product.serving_unit && (
                                 <div className="text-xs text-gray-500 mt-0.5">
                                   {Math.round(product.nf_calories)} cal per {product.serving_unit}
                                 </div>
@@ -495,29 +546,29 @@ const FoodFinanceDashboard = () => {
                   )}
                 </div>
 
-                {/* Selected Product */}
                 {selectedProduct && (
                   <div className="mb-4 p-3 bg-blue-900/30 rounded-lg border border-blue-700/50">
                     <div className="flex items-center gap-3">
                       {selectedProduct.photo?.thumb && (
-                        <img src={selectedProduct.photo.thumb} alt="" className="w-12 h-12 rounded object-cover" />
+                        <img src={selectedProduct.photo.thumb} alt={selectedProduct.food_name} className="w-12 h-12 rounded object-cover" />
                       )}
                       <div className="flex-1">
                         <div className="font-medium text-white">{selectedProduct.brand_name || 'Generic'}</div>
                         <div className="text-gray-300 text-sm">{selectedProduct.food_name}</div>
-                        <div className="text-xs text-gray-400 mt-1">
-                          Per {selectedProduct.serving_qty} {selectedProduct.serving_unit}: {Math.round(selectedProduct.nf_calories)} cal | 
-                          {Math.round(selectedProduct.nf_protein)}g protein | 
-                          {Math.round(selectedProduct.nf_total_fat)}g fat | 
-                          {Math.round(selectedProduct.nf_total_carbohydrate)}g carbs
-                        </div>
+                        {selectedProduct.nf_calories && (
+                          <div className="text-xs text-gray-400 mt-1">
+                            Per {selectedProduct.serving_qty} {selectedProduct.serving_unit}: {Math.round(selectedProduct.nf_calories)} cal
+                            {typeof selectedProduct.nf_protein === 'number' && ` | ${Math.round(selectedProduct.nf_protein)}g P`}
+                            {typeof selectedProduct.nf_total_fat === 'number' && ` | ${Math.round(selectedProduct.nf_total_fat)}g F`}
+                            {typeof selectedProduct.nf_total_carbohydrate === 'number' && ` | ${Math.round(selectedProduct.nf_total_carbohydrate)}g C`}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
                 )}
 
-                {/* Unit Selection */}
-                {selectedProduct && selectedProduct.common_units && (
+                {selectedProduct && selectedProduct.common_units && selectedProduct.common_units.length > 0 && (
                   <div className="mb-4">
                     <label className="block text-gray-300 text-sm font-medium mb-1">Select Unit</label>
                     <select
@@ -534,7 +585,6 @@ const FoodFinanceDashboard = () => {
                   </div>
                 )}
 
-                {/* Weight Input */}
                 <div className="mb-4">
                   <label className="block text-gray-300 text-sm font-medium mb-1">
                     Quantity {selectedUnit && `(${selectedUnit})`}
@@ -542,28 +592,30 @@ const FoodFinanceDashboard = () => {
                   <input
                     type="number"
                     step="0.01"
+                    min="0"
                     value={weight}
                     onChange={(e) => setWeight(e.target.value)}
                     placeholder={selectedUnit ? `Number of ${selectedUnit}` : "Enter amount"}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    disabled={!selectedProduct}
                   />
                 </div>
 
-                {/* Cost Input */}
                 <div className="mb-4">
                   <label className="block text-gray-300 text-sm font-medium mb-1">Total Cost ($)</label>
                   <input
                     type="number"
                     step="0.01"
+                    min="0"
                     value={cost}
                     onChange={(e) => setCost(e.target.value)}
                     placeholder="Enter total cost"
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    disabled={!selectedProduct}
                   />
                 </div>
 
-                {/* Price & Nutrition Calculation */}
-                {weight && cost && selectedProduct && selectedUnit && (
+                {weight && cost && selectedProduct && selectedUnit && parseFloat(weight) > 0 && (
                   <div className="mb-4 space-y-2">
                     <div className="p-2 bg-green-900/30 rounded border border-green-700/50">
                       <div className="text-green-300 text-sm">
@@ -586,11 +638,10 @@ const FoodFinanceDashboard = () => {
                   </div>
                 )}
 
-                {/* Action Buttons */}
                 <div className="flex gap-2">
                   <button
                     onClick={editingId ? updateExpense : addExpense}
-                    disabled={!selectedProduct || !weight || !cost}
+                    disabled={!selectedProduct || !weight || !cost || parseFloat(weight) <= 0 || parseFloat(cost) < 0}
                     className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg font-medium disabled:bg-gray-600 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
                   >
                     <Plus className="h-4 w-4" />
@@ -609,11 +660,8 @@ const FoodFinanceDashboard = () => {
               </div>
             </div>
 
-            {/* Charts and Data */}
             <div className="lg:col-span-2 space-y-6">
-              {/* Charts Row 1 */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {/* Trend Chart */}
                 <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
                   <h3 className="text-lg font-bold text-white mb-3 flex items-center gap-2">
                     <TrendingUp className="h-4 w-4 text-blue-400" />
@@ -633,6 +681,7 @@ const FoodFinanceDashboard = () => {
                             borderRadius: '6px',
                             color: '#ffffff'
                           }}
+                          itemStyle={{ color: '#ffffff' }}
                           labelStyle={{ color: '#9CA3AF' }}
                         />
                         <Line 
@@ -651,11 +700,10 @@ const FoodFinanceDashboard = () => {
                   )}
                 </div>
 
-                {/* Nutrition Breakdown */}
                 <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
                   <h3 className="text-lg font-bold text-white mb-3 flex items-center gap-2">
                     <Flame className="h-4 w-4 text-orange-400" />
-                    Nutrition Breakdown
+                    Nutrition Breakdown (Total)
                   </h3>
                   {analytics.nutritionData.some(d => d.value > 0) ? (
                     <ResponsiveContainer width="100%" height={200}>
@@ -668,6 +716,8 @@ const FoodFinanceDashboard = () => {
                           outerRadius={80}
                           paddingAngle={5}
                           dataKey="value"
+                          labelLine={false}
+                          label={renderCustomPieLabel}
                         >
                           {analytics.nutritionData.map((entry, index) => (
                             <Cell key={`cell-${index}`} fill={entry.color} />
@@ -681,6 +731,7 @@ const FoodFinanceDashboard = () => {
                             borderRadius: '6px',
                             color: '#ffffff'
                           }}
+                          itemStyle={{ color: '#ffffff' }}
                           labelStyle={{ color: '#9CA3AF' }}
                         />
                       </PieChart>
@@ -693,13 +744,11 @@ const FoodFinanceDashboard = () => {
                 </div>
               </div>
 
-              {/* Charts Row 2 */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {/* Calorie Trend */}
                 <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
                   <h3 className="text-lg font-bold text-white mb-3 flex items-center gap-2">
                     <Flame className="h-4 w-4 text-orange-400" />
-                    Daily Calories
+                    Daily Calories (Last 7 Days)
                   </h3>
                   {analytics.chartData.length > 0 ? (
                     <ResponsiveContainer width="100%" height={200}>
@@ -715,6 +764,7 @@ const FoodFinanceDashboard = () => {
                             borderRadius: '6px',
                             color: '#ffffff'
                           }}
+                          itemStyle={{ color: '#ffffff' }}
                           labelStyle={{ color: '#9CA3AF' }}
                         />
                         <Bar dataKey="calories" fill="#f97316" radius={[6, 6, 0, 0]} />
@@ -727,7 +777,6 @@ const FoodFinanceDashboard = () => {
                   )}
                 </div>
 
-                {/* Category Pie */}
                 <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
                   <h3 className="text-lg font-bold text-white mb-3 flex items-center gap-2">
                     <Sparkles className="h-4 w-4 text-purple-400" />
@@ -744,19 +793,22 @@ const FoodFinanceDashboard = () => {
                           outerRadius={80}
                           paddingAngle={5}
                           dataKey="value"
+                          labelLine={false}
+                          label={renderCustomPieLabel}
                         >
                           {analytics.pieData.map((entry, index) => (
                             <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                           ))}
                         </Pie>
                         <Tooltip 
-                          formatter={(value) => [`${value.toFixed(2)}`, 'Amount']}
+                          formatter={(value, name) => [`$${value.toFixed(2)} (${(value / (analytics.total || 1) * 100).toFixed(1)}%)`, name]}
                           contentStyle={{
                             backgroundColor: '#1F2937',
                             border: '1px solid #374151',
                             borderRadius: '6px',
                             color: '#ffffff'
                           }}
+                          itemStyle={{ color: '#ffffff' }}
                           labelStyle={{ color: '#9CA3AF' }}
                         />
                       </PieChart>
@@ -769,7 +821,6 @@ const FoodFinanceDashboard = () => {
                 </div>
               </div>
 
-              {/* Purchase List */}
               <div className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
                 <div className="p-4 border-b border-gray-700">
                   <h3 className="text-lg font-bold text-white flex items-center gap-2">
@@ -791,7 +842,7 @@ const FoodFinanceDashboard = () => {
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-3 flex-1">
                               {expense.photo && (
-                                <img src={expense.photo} alt="" className="w-10 h-10 rounded object-cover" />
+                                <img src={expense.photo} alt={expense.food_name} className="w-10 h-10 rounded object-cover" />
                               )}
                               <div className="flex-1">
                                 <div className="font-medium text-white">{expense.brand_name}</div>
@@ -816,12 +867,14 @@ const FoodFinanceDashboard = () => {
                               <button
                                 onClick={() => editExpense(expense)}
                                 className="p-1.5 text-gray-400 hover:text-blue-400 hover:bg-blue-900/30 rounded transition-colors"
+                                title="Edit Item"
                               >
                                 <Edit3 className="h-3.5 w-3.5" />
                               </button>
                               <button
                                 onClick={() => deleteExpense(expense.id)}
                                 className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-900/30 rounded transition-colors"
+                                title="Delete Item"
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
                               </button>
